@@ -137,4 +137,4 @@ python guard.py start --name smoke --no-notify -- python -c 'print("hello")'
 - NVIDIA 驱动与 CUDA：<https://docs.nvidia.com/datacenter/tesla/drivers/cuda-toolkit-driver-and-architecture-matrix.html>
 - 可选飞书：<https://open.feishu.cn/document/client-docs/bot-v3/add-custom-bot>
 
-不包含云服务器租用、充值、账户自动开通权限或远程驱动升级。GitHub 地址确认并发布后，可在新实例克隆同一仓库使用。
+不包含云服务器租用、充值、账户自动开通权限或远程驱动升级。发布仓库：<https://github.com/TTJTR/Smart_HPC>。

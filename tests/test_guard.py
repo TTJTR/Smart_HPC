@@ -106,11 +106,13 @@ class GuardTests(unittest.TestCase):
             root=Path(tmp)
             with patch.object(guard.sys,'platform','linux'),patch.object(guard.os,'access',return_value=True),\
                  patch.object(guard.shutil,'which',return_value=None),patch.dict(os.environ,{},clear=True),\
-                 patch.object(guard,'load_config',return_value={}),\
-                 patch.object(guard,'notify',return_value={'delivered':False}),\
+                 patch.object(guard,'load_config',return_value={'provider':'serverchan','sendkey':'SCTtest123'}),\
+                 patch.object(guard,'notify',return_value={'delivered':False}) as notification,\
                  patch.object(guard,'perform_shutdown',return_value=0) as shutdown:
                 guard.run(self.args(root,[sys.executable,'-c','raise SystemExit(3)'],shutdown=True,no_notify=False))
             shutdown.assert_called_once()
+            notification.assert_called_once()
+            self.assertFalse(self.state(root)['notification']['delivered'])
             self.assertEqual(self.state(root)['shutdown']['state'],'request_returned')
             self.assertFalse(self.state(root)['shutdown']['confirmed_poweroff'])
 
