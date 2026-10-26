@@ -143,7 +143,7 @@ class GuardTests(unittest.TestCase):
             for _ in range(100):
                 if self.state(root)['state'] in guard.TERMINAL and 'notification' in self.state(root):break
                 time.sleep(.05)
-            self.assertEqual(self.state(root)['state'],'succeeded')
+            self.assertEqual(self.state(root)['state'],'succeeded',self.state(root))
             self.assertIn('detached',(root/'test/task.log').read_text())
 
 
@@ -181,9 +181,91 @@ class BootstrapTests(unittest.TestCase):
             with patch.object(bootstrap,'system_info',return_value={'gpu':None,'slurm_available':False}),\
                  patch.object(bootstrap,'capture',return_value=result),\
                  patch.object(bootstrap.subprocess,'run') as install:
-                self.assertEqual(bootstrap.main(['--device','cpu','--destination',tmp]),0)
+                self.assertEqual(bootstrap.main(['--fresh','--device','cpu','--destination',tmp]),0)
             install.assert_not_called()
             self.assertEqual(list(Path(tmp).iterdir()),[])
+
+    def test_reusable_environment_skips_network_and_installation(self):
+        existing={'status':'reuse','versions':{'torch':'2.5.1'},'missing':[]}
+        with patch.object(bootstrap,'system_info',return_value={'gpu':None,'slurm_available':False}),\
+             patch.object(bootstrap,'inspect_current',return_value=existing),\
+             patch.object(bootstrap.urllib.request,'urlopen') as network,\
+             patch.object(bootstrap.subprocess,'run') as install:
+            self.assertEqual(bootstrap.main(['--device','cpu']),0)
+        network.assert_not_called();install.assert_not_called()
+
+    def test_apply_reuse_writes_record_without_installing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            args=argparse.Namespace(apply=True,destination=tmp)
+            existing={'status':'reuse','versions':{'torch':'2.5.1'},'missing':[]}
+            with patch.object(bootstrap,'capture',return_value=subprocess.CompletedProcess([],0,'torch==2.5.1\n')),\
+                 patch.object(bootstrap.subprocess,'run') as install:
+                self.assertTrue(bootstrap.reuse_or_supplement(args,existing,'cpu',['vision']))
+            install.assert_not_called()
+            result=json.loads((Path(tmp)/'latest.json').read_text())
+            self.assertEqual(result['mode'],'reuse');self.assertEqual(result['installed_packages'],[])
+
+    def test_missing_packages_plan_does_not_install(self):
+        existing={'status':'supplement','missing':['timm'],'versions':{'torch':'2.5.1'}}
+        args=argparse.Namespace(apply=False)
+        with patch.object(bootstrap,'supplement_existing') as install:
+            self.assertTrue(bootstrap.reuse_or_supplement(args,existing,'cuda',['vision']))
+        install.assert_not_called()
+
+    def test_failed_overlay_does_not_publish_ready_pointer(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            args=argparse.Namespace(apply=True,destination=tmp)
+            existing={'status':'supplement','missing':['timm'],'versions':{'torch':'2.5.1'}}
+            with patch.object(bootstrap,'supplement_existing',side_effect=RuntimeError('incompatible')):
+                self.assertFalse(bootstrap.reuse_or_supplement(args,existing,'cpu',['vision']))
+            self.assertFalse((Path(tmp)/'latest.json').exists())
+
+    def test_core_runtime_failure_is_not_reused(self):
+        inventory={'versions':{'torch':'2.5.1'},'missing':['timm'],'source_sites':[]}
+        with patch.object(bootstrap,'capture',side_effect=[subprocess.CompletedProcess([],0,json.dumps(inventory)),
+                                                           subprocess.CompletedProcess([],1,'CUDA failure')]):
+            result=bootstrap.inspect_current('cuda',['timm'],['vision'])
+        self.assertEqual(result['status'],'unusable')
+        self.assertEqual(result['reason'],'existing_torch_runtime_failed')
+
+    def test_healthy_torch_with_missing_extras_requests_supplement(self):
+        inventory={'versions':{'torch':'2.5.1'},'missing':['timm'],'source_sites':[]}
+        with patch.object(bootstrap,'capture',side_effect=[subprocess.CompletedProcess([],0,json.dumps(inventory)),
+                    subprocess.CompletedProcess([],0,json.dumps({'torch':'2.5.1','cuda_runtime':'12.4'}))]):
+            result=bootstrap.inspect_current('cuda',['timm'],['vision'])
+        self.assertEqual(result['status'],'supplement')
+        self.assertEqual(result['missing'],['timm'])
+
+    def test_fresh_explicitly_bypasses_existing_probe(self):
+        with patch.object(bootstrap,'system_info',return_value={'gpu':None,'slurm_available':False}),\
+             patch.object(bootstrap,'inspect_current') as existing,\
+             patch.object(bootstrap,'capture',return_value=subprocess.CompletedProcess([],0,'torch (2.5.1+cpu)\n')):
+            self.assertEqual(bootstrap.main(['--fresh','--device','cpu']),0)
+        existing.assert_not_called()
+
+    def test_overlay_installs_only_missing_extra_and_pins_existing_torch(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp);site=root/'site';site.mkdir();base=root/'base';base.mkdir()
+            existing={'source_sites':[str(base)],'missing':['timm'],
+                      'versions':{'torch':'2.5.1','torchvision':'0.20.1','torchaudio':'2.5.1'}}
+            responses=[subprocess.CompletedProcess([],0,str(site)),
+                       subprocess.CompletedProcess([],0,'{"smoke_passed":true}'),
+                       subprocess.CompletedProcess([],0,json.dumps(existing['versions'])),
+                       subprocess.CompletedProcess([],0,'torch==2.5.1\ntimm==1.0.0\n')]
+            directory=root/'overlay'
+            def simulated_run(command,**kwargs):
+                if command[1:3]==['-m','venv']:directory.mkdir()
+                return subprocess.CompletedProcess(command,0)
+            with patch.object(bootstrap,'capture',side_effect=responses),\
+                 patch.object(bootstrap.subprocess,'run',side_effect=simulated_run) as commands:
+                result=bootstrap.supplement_existing(directory,existing,'cpu',['vision'])
+            installs=[call.args[0] for call in commands.call_args_list if 'install' in call.args[0]]
+            self.assertEqual(len(installs),2) # pip tooling plus the missing extra
+            self.assertEqual(installs[-1][-1],'timm')
+            self.assertFalse(any('torch' in command or 'torchvision' in command for command in installs))
+            self.assertIn('torch==2.5.1',(directory/'base-torch-constraints.txt').read_text())
+            self.assertIn(str(base),(site/'task_guard_base.pth').read_text(encoding='utf-8'))
+            self.assertEqual(result['mode'],'supplement')
 
 
 if __name__=='__main__':unittest.main()

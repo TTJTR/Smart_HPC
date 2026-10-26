@@ -15,11 +15,14 @@ python bootstrap.py --apply
 需要已有 Python 3.10+。建议在 AutoDL 选择含现代 Python 的官方 PyTorch/Miniconda 镜像。
 
 ```bash
-# 只检测并输出建议，不安装
+# 优先检测已有框架，验证能否复用；不安装
 python bootstrap.py
 
-# 一键检测、创建隔离环境、安装、做真实运算检查
+# 一键优先复用；缺包时补装；无法兼容才新建环境
 python bootstrap.py --apply
+
+# 明确希望重新选择新版框架时，跳过复用
+python bootstrap.py --apply --fresh
 
 # 同时准备视觉与 LLM 工具链
 python bootstrap.py --apply --profile vision --profile llm
@@ -30,15 +33,26 @@ python bootstrap.py --apply --device cpu
 
 运行逻辑：
 
+**默认先检查运行本脚本的当前 Python 环境**，包括已激活的 Conda/venv 或服务器镜像预装环境。先验证现有 torch 的矩阵乘法、反向传播和卷积，再检查所选用途的依赖。
+
+- 框架和依赖齐全、实际运算通过：直接复用，不访问包索引，不重复下载或升级。
+- 框架能用但缺少依赖：创建一个轻量隔离补充环境，通过该环境自己的 `.pth` 复用原环境包，只安装缺少的库及其必要依赖；原环境不改动，已有 torch 三件套版本锁定。
+- 当前框架不存在、运算不兼容，或补充安装无法通过：回退到下述完整隔离安装流程。
+- 当前版本可用时，默认不追求升级到最新；要重新选新版，显式传 `--fresh`。
+
+激活你想复用的环境之后再运行本脚本。工具不会扫描并修改所有 Conda 环境，也不把“包名存在”当作验证成功。补充环境依赖原环境路径，不能删掉原环境后继续使用它。部分库虽然有包但自身损坏时，完整检查会拒绝复用。
+
+需要新建框架时的流程：
+
 1. 识别操作系统、架构、Python、CPU 数、GPU 型号、计算能力、NVIDIA 驱动和驱动支持的 CUDA 上限；记录 nvcc 但不把本地 Toolkit 版本作为唯一标准。
 2. 动态读取 PyTorch 官方稳定 wheel 渠道，排除高于驱动 CUDA 上限的渠道，并对 Blackwell / 旧 GPU 做保守架构筛选。不使用 nightly。
 3. 使用当前 Python 的 pip 检查可用 wheel，按稳定版 torch 版本排序；配套 torchvision、torchaudio 交给依赖解析器选择。
 4. 仅在 `--apply` 时创建新的 venv，不修改系统 Python、驱动、CUDA Toolkit 或 HPC 共享环境。
 5. 安装所选用途库，并锁住 torch 三件套版本，防止附加库悄悄换掉已选核心组合。
 6. 执行 pip check、所有选定库的导入、GPU 矩阵运算/反向传播、卷积及 torchvision NMS 检查。没有 GPU 时不会悄悄改装 CPU 版。
-7. 保存 plan、解析报告、测试日志、requirements.lock.txt；只有检查通过才更新 latest.json。失败保留诊断目录并尝试下一候选，默认最多 2 次。
+7. 保存 plan、解析报告、测试日志、requirements.lock.txt；只有检查通过才更新 latest.json。失败保留诊断目录并尝试下一候选，默认最多 2 次。复用模式记录当前解释器和版本，installed_packages 为空。
 
-默认目录 `~/autodl-tmp/task-guard-envs`，可用 `--destination` 指向持久数据盘。完成后使用程序输出的绝对路径激活，例如：
+默认目录 `~/autodl-tmp/task-guard-envs`，可用 `--destination` 指向持久数据盘。完全复用时继续使用当前 Python；补充或新建时使用输出的环境 Python 或激活对应环境，例如：
 
 ```bash
 source /root/autodl-tmp/task-guard-envs/setup_日期/1_cuXXX/bin/activate

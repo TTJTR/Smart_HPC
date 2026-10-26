@@ -1,5 +1,13 @@
 # 验证记录（2026-10-26）
 
+## 预装环境复用更新
+
+- 新增默认优先复用、缺包隔离补充、`--fresh` 强制新建模式。
+- 更新后 29 项测试：Windows 本地 28 项通过、1 项 POSIX 专用测试跳过。Windows 沙箱对 detached 子进程启动存在限制，最终在沙箱外运行同一套测试通过；真实通知和关机仍是模拟。
+- 新增测试覆盖完整复用时不访问包索引、不安装包；缺包计划只读；补充失败不发布 ready 指针；GPU 运行失败拒绝复用；补充环境只请求缺失依赖并锁住已有 torch 版本。
+- 本机真实只读检查识别出已有 torch 2.5.1+cu124、torchvision 0.20.1+cu124、torchaudio 2.5.1+cu124，并通过 torch CUDA 运算。缺少 tensorboard、timm、opencv-python-headless，正确返回 supplement 计划，没有执行安装。
+- 此次变更未在真实 AutoDL 实例执行缺包安装；该部分自动测试使用模拟 pip 和环境创建。
+
 ## 已完成
 
 - 本机 Python 3.12.4：21 项自动测试，其中 20 项通过，1 项 POSIX 文件锁测试因 Windows 跳过。

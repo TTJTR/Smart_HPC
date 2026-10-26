@@ -223,9 +223,9 @@ def run(args):
                     terminal='failed'
                 save(state=terminal,exit_code=exit_code,missing_success_file=bool(missing),
                      elapsed_seconds=round(time.monotonic()-started,3),finished_utc=utc(),child_pid=None)
-            except Exception:
+            except Exception as error:
                 if child is not None: stop_child(child)
-                save(state='launch_failed',exit_code=127,finished_utc=utc())
+                save(state='launch_failed',exit_code=127,error_type=type(error).__name__,finished_utc=utc())
             finally:
                 for sig,previous in old.items():signal.signal(sig,previous)
             text = (f"AutoDL任务通知\n任务：{args.name}\n任务ID：{args.id}\n"
