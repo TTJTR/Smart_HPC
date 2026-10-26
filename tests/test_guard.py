@@ -249,6 +249,7 @@ class BootstrapTests(unittest.TestCase):
             existing={'source_sites':[str(base)],'missing':['timm'],
                       'versions':{'torch':'2.5.1','torchvision':'0.20.1','torchaudio':'2.5.1'}}
             responses=[subprocess.CompletedProcess([],0,str(site)),
+                       subprocess.CompletedProcess([],0,'No broken requirements found.'),
                        subprocess.CompletedProcess([],0,'{"smoke_passed":true}'),
                        subprocess.CompletedProcess([],0,json.dumps(existing['versions'])),
                        subprocess.CompletedProcess([],0,'torch==2.5.1\ntimm==1.0.0\n')]
@@ -266,6 +267,32 @@ class BootstrapTests(unittest.TestCase):
             self.assertIn('torch==2.5.1',(directory/'base-torch-constraints.txt').read_text())
             self.assertIn(str(base),(site/'task_guard_base.pth').read_text(encoding='utf-8'))
             self.assertEqual(result['mode'],'supplement')
+
+    def test_dependency_conflict_blocks_ready_even_when_imports_work(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp)
+            with patch.object(bootstrap,'capture',return_value=subprocess.CompletedProcess([],1,
+                            'httpcore 1.0.7 requires h11<0.15,>=0.13, but you have h11 0.16.0.')):
+                with self.assertRaises(bootstrap.DependencyConflict):
+                    bootstrap.validate_dependencies('python',root)
+            self.assertIn('httpcore',(root/'pip-check.log').read_text())
+
+    def test_overlay_dependency_conflict_does_not_fall_back_to_torch_download(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            args=argparse.Namespace(apply=True,destination=tmp)
+            existing={'status':'supplement','missing':['timm'],'versions':{'torch':'2.5.1'}}
+            with patch.object(bootstrap,'supplement_existing',side_effect=bootstrap.DependencyConflict('h11 conflict')):
+                with self.assertRaises(bootstrap.DependencyConflict):
+                    bootstrap.reuse_or_supplement(args,existing,'cpu',['vision'])
+            self.assertFalse((Path(tmp)/'latest.json').exists())
+
+    def test_existing_dependency_conflict_stops_apply_without_network(self):
+        with patch.object(bootstrap,'system_info',return_value={'slurm_available':False}),\
+             patch.object(bootstrap,'inspect_current',return_value={'status':'dependency_conflict'}),\
+             patch.object(bootstrap.urllib.request,'urlopen') as network:
+            with self.assertRaises(bootstrap.DependencyConflict):
+                bootstrap.main(['--apply','--device','cpu'])
+        network.assert_not_called()
 
 
 if __name__=='__main__':unittest.main()

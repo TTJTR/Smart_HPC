@@ -27,6 +27,20 @@ IMPORT_NAMES={'scikit-learn':'sklearn','pillow':'PIL','pyyaml':'yaml',
               'opencv-python-headless':'cv2','huggingface-hub':'huggingface_hub'}
 
 
+class DependencyConflict(RuntimeError):
+    """Do not publish ready or redownload torch to hide a dependency conflict."""
+
+
+def validate_dependencies(python,directory=None):
+    checked=capture([str(python),'-m','pip','check'],timeout=60,env=pip_env())
+    if directory is not None:
+        (directory/'pip-check.log').write_text(checked.stdout,encoding='utf-8')
+    if checked.returncode:
+        raise DependencyConflict('Dependency check failed. Repair this environment with its own Python; '
+                                 'see pip-check.log. No fresh framework download was started.')
+    return checked.stdout
+
+
 def capture(command,timeout=30,check=False,env=None):
     return subprocess.run(command,text=True,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,
                           timeout=timeout,check=check,env=env)
@@ -173,6 +187,9 @@ print(json.dumps({'torch':torch.__version__,'cuda_runtime':torch.version.cuda,'d
     full=capture([sys.executable,'-c',smoke_source(device,profiles)],timeout=180)
     if full.returncode:
         return dict(inventory,status='unusable',reason='existing_stack_smoke_failed',diagnostic=full.stdout[-6000:])
+    checked=capture([sys.executable,'-m','pip','check'],timeout=60,env=pip_env())
+    if checked.returncode:
+        return dict(inventory,status='dependency_conflict',reason='existing_dependency_check_failed',diagnostic=checked.stdout)
     return dict(inventory,status='reuse',reason='existing_stack_verified',smoke=json.loads(full.stdout.strip().splitlines()[-1]))
 
 
@@ -201,6 +218,7 @@ def supplement_existing(directory,existing,device,profiles):
     if missing_extras:
         pip('install','--only-binary=:all:','--index-url',PYPI,'--constraint',str(constraint),
             '--report',str(directory/'extras-resolve.json'),*missing_extras)
+    validate_dependencies(python,directory)
     full=capture([str(python),'-c',smoke_source(device,profiles)],timeout=180)
     (directory/'smoke.log').write_text(full.stdout,encoding='utf-8')
     if full.returncode:raise RuntimeError('Supplement environment failed runtime validation')
@@ -220,6 +238,9 @@ def supplement_existing(directory,existing,device,profiles):
 def reuse_or_supplement(args,existing,device,profiles):
     """Return True when reuse policy handles the request; no global mutation."""
     print(json.dumps({'existing_environment':existing,'apply':args.apply},ensure_ascii=False,indent=2),flush=True)
+    if existing['status']=='dependency_conflict':
+        if args.apply:raise DependencyConflict('Existing environment has dependency conflicts; repair before reuse, or explicitly choose --fresh.')
+        return True
     if existing['status']=='unusable':return False
     if not args.apply:return True
     destination=Path(args.destination).expanduser().resolve()
@@ -236,6 +257,10 @@ def reuse_or_supplement(args,existing,device,profiles):
     else:
         try:
             result=supplement_existing(report/'overlay',existing,device,profiles)
+        except DependencyConflict:
+            write(report/'result.json',{'status':'failed','mode':'supplement','reason':'dependency_conflict',
+                  'python':str(report/'overlay'/('Scripts/python.exe' if os.name=='nt' else 'bin/python'))})
+            raise
         except (subprocess.SubprocessError,OSError,RuntimeError) as error:
             write(report/'result.json',{'status':'failed','mode':'supplement','error_type':type(error).__name__})
             print('Supplement failed; base environment retained. Falling back to a fresh isolated environment.',flush=True)
